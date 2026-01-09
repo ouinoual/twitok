@@ -68,7 +68,7 @@ def token_expired(tokens: dict) -> bool:
 
 
 async def refresh_access_token():
-    # Refresh يتم عبر POST /v2/oauth/token/ مع grant_type=refresh_token [web:305]
+    # Refresh يتم عبر POST /v2/oauth/token/ مع grant_type=refresh_token
     tokens = load_tokens()
     if not tokens or not tokens.get("refresh_token"):
         return None, JSONResponse(
@@ -115,7 +115,10 @@ async def refresh_access_token():
 async def get_valid_access_token():
     tokens = load_tokens()
     if not tokens or not tokens.get("access_token"):
-        return None, JSONResponse({"ok": False, "error": "Not authorized yet. Visit /tiktok/login"}, status_code=400)
+        return None, JSONResponse(
+            {"ok": False, "error": "Not authorized yet. Visit /tiktok/login"},
+            status_code=400,
+        )
 
     if token_expired(tokens):
         tokens, err = await refresh_access_token()
@@ -143,11 +146,15 @@ def extract(payload: dict):
 
     cmd = [
         "yt-dlp",
-        "-f", "bv*+ba/best",
-        "--merge-output-format", "mp4",
-        "-o", outtmpl,
+        "-f",
+        "bv*+ba/best",
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        outtmpl,
         url,
     ]
+
     subprocess.check_call(cmd)
 
     if not PUBLIC_BASE_URL:
@@ -159,7 +166,7 @@ def extract(payload: dict):
 @app.get("/tiktok/login")
 @app.get("/tiktok/login/")
 def tiktok_login():
-    # authorize URL يعتمد https://www.tiktok.com/v2/auth/authorize/ [web:377]
+    # authorize URL يعتمد https://www.tiktok.com/v2/auth/authorize/
     client_key, err = require_env(TIKTOK_CLIENT_KEY, "TIKTOK_CLIENT_KEY")
     if err:
         return err
@@ -169,7 +176,6 @@ def tiktok_login():
         return err
 
     state = secrets.token_urlsafe(16)
-
     params = {
         "client_key": client_key,
         "scope": DEFAULT_SCOPE,
@@ -235,7 +241,7 @@ async def tiktok_callback(
     if err:
         return err
 
-    # exchange code -> token عبر POST /v2/oauth/token/ [web:305]
+    # exchange code -> token عبر POST /v2/oauth/token/
     data = {
         "client_key": client_key,
         "client_secret": client_secret,
@@ -286,17 +292,19 @@ def tiktok_token_info():
 @app.post("/tiktok/publish")
 @app.post("/tiktok/publish/")
 async def tiktok_publish(payload: dict):
-    # Direct Post: /v2/post/publish/video/init/ ثم status/fetch [web:411][web:472]
+    # Direct Post: /v2/post/publish/video/init/ ثم status/fetch
     access_token, err = await get_valid_access_token()
     if err:
         return err
 
     file_id = payload.get("file_id")
     file_path = payload.get("file_path")
-    title = payload.get("title", "Posted via API")
-    privacy_level = payload.get("privacy_level", "PRIVATE")
 
-    if file_id:
+    title = payload.get("title", "Posted via API")
+    # تعديل: الافتراضي SELF_ONLY (بدل PRIVATE) لأن PRIVATE ليست قيمة TikTok privacy_level
+    privacy_level = payload.get("privacy_level", "SELF_ONLY")
+
+    if file_id and not file_path:
         file_path = os.path.join(FILES_DIR, f"{file_id}.mp4")
 
     if not file_path or not os.path.exists(file_path):
@@ -336,18 +344,22 @@ async def tiktok_publish(payload: dict):
     publish_id = data["publish_id"]
     upload_url = data["upload_url"]
 
-    # رفع الفيديو بـ PUT إلى upload_url (FILE_UPLOAD) [web:404]
+    # رفع الفيديو بـ PUT إلى upload_url (FILE_UPLOAD)
     start = 0
     end = video_size - 1
+
     put_headers = {
         "Content-Type": "video/mp4",
         "Content-Range": f"bytes {start}-{end}/{video_size}",
         "Content-Length": str(video_size),
     }
 
+    # === التعديل المهم: لا نرسل file handle مباشرة داخل AsyncClient ===
+    with open(file_path, "rb") as f:
+        video_bytes = f.read()
+
     async with httpx.AsyncClient(timeout=None) as client:
-        with open(file_path, "rb") as f:
-            put_r = await client.put(upload_url, content=f, headers=put_headers)
+        put_r = await client.put(upload_url, content=video_bytes, headers=put_headers)
 
     if put_r.status_code not in (200, 201, 204):
         return JSONResponse(
@@ -355,7 +367,7 @@ async def tiktok_publish(payload: dict):
             status_code=400,
         )
 
-    # فحص الحالة بـ publish_id [web:472]
+    # فحص الحالة بـ publish_id
     async with httpx.AsyncClient(timeout=30) as client:
         status_r = await client.post(
             "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
